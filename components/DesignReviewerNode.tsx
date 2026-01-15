@@ -3,7 +3,7 @@ import { Handle, Position, NodeProps, useReactFlow, useUpdateNodeInternals, useE
 import { PSDNodeData, TransformedPayload, LayerOverride, ChatMessage, ReviewerStrategy, ReviewerInstanceState, TransformedLayer, FeedbackStrategy } from '../types';
 import { useProceduralStore } from '../store/ProceduralContext';
 import { GoogleGenAI, Type } from "@google/genai";
-import { Check, MessageSquare, AlertCircle, ShieldCheck, Search, Activity, Brain, Ban, Link as LinkIcon, Layers, Lock, Move, Anchor, Zap } from 'lucide-react';
+import { Check, MessageSquare, AlertCircle, ShieldCheck, Search, Activity, Brain, Ban, Link as LinkIcon, Layers, Lock, Move, Anchor, Zap, RotateCcw } from 'lucide-react';
 
 const DEFAULT_INSTANCE_STATE: ReviewerInstanceState = {
     chatHistory: [],
@@ -87,9 +87,9 @@ const checkSynchronization = (payload: TransformedPayload | null, strategy: Revi
 };
 
 const ReviewerInstanceRow = memo(({ 
-    index, instanceState, payload, onChat, onVerify, onCommit, isPolished, isAnalyzing, isSyncing, activeKnowledge 
+    index, instanceState, payload, onChat, onVerify, onCommit, onReset, isPolished, isAnalyzing, isSyncing, activeKnowledge 
 }: { 
-    index: number, instanceState: ReviewerInstanceState, payload: TransformedPayload | null, onChat: (idx: number, msg: string) => void, onVerify: (idx: number) => void, onCommit: (idx: number) => void, isPolished: boolean, isAnalyzing: boolean, isSyncing: boolean, activeKnowledge: any 
+    index: number, instanceState: ReviewerInstanceState, payload: TransformedPayload | null, onChat: (idx: number, msg: string) => void, onVerify: (idx: number) => void, onCommit: (idx: number) => void, onReset: (idx: number) => void, isPolished: boolean, isAnalyzing: boolean, isSyncing: boolean, activeKnowledge: any 
 }) => {
     const [inputValue, setInputValue] = useState("");
     const [isInspectorOpen, setInspectorOpen] = useState(false);
@@ -183,6 +183,15 @@ const ReviewerInstanceRow = memo(({
                         title="Toggle Semantic Inspector"
                      >
                          <Search className="w-3.5 h-3.5" />
+                     </button>
+                     
+                     {/* Reset Button */}
+                     <button 
+                        onClick={() => onReset(index)}
+                        className="p-1.5 rounded transition-colors text-slate-500 hover:text-red-400 hover:bg-slate-700/50"
+                        title="Reset Instance (Clear History & Physics)"
+                     >
+                         <RotateCcw className="w-3.5 h-3.5" />
                      </button>
                      
                      {/* Push to Physics Button (Feedback Loop) */}
@@ -304,7 +313,7 @@ export const DesignReviewerNode = memo(({ id, data }: NodeProps<PSDNodeData>) =>
     const edges = useEdges();
     const { setNodes } = useReactFlow();
     const updateNodeInternals = useUpdateNodeInternals();
-    const { payloadRegistry, updatePayload, unregisterNode, knowledgeRegistry, registerFeedback } = useProceduralStore();
+    const { payloadRegistry, updatePayload, unregisterNode, knowledgeRegistry, registerFeedback, clearFeedback } = useProceduralStore();
     const [analyzingInstances, setAnalyzingInstances] = useState<Record<number, boolean>>({});
     const [syncingInstances, setSyncingInstances] = useState<Record<number, boolean>>({});
 
@@ -345,6 +354,19 @@ export const DesignReviewerNode = memo(({ id, data }: NodeProps<PSDNodeData>) =>
         }));
     }, [id, setNodes]);
 
+    // NEW: Handle Hard Reset
+    const handleReset = useCallback((index: number) => {
+        // 1. Reset Local State
+        updateInstanceState(index, DEFAULT_INSTANCE_STATE);
+        
+        // 2. Clear Global Constraints
+        const upstream = findUpstreamRemapper(index);
+        if (upstream) {
+            console.log(`[Reviewer] Hard Reset for Instance ${index}. Clearing feedback on ${upstream.nodeId}:${upstream.handleId}`);
+            clearFeedback(upstream.nodeId, upstream.handleId);
+        }
+    }, [updateInstanceState, findUpstreamRemapper, clearFeedback]);
+
     const performManualAudit = async (index: number, userMessage: string, currentHistory: ChatMessage[], payload: TransformedPayload) => {
         setAnalyzingInstances(prev => ({ ...prev, [index]: true }));
         
@@ -353,7 +375,13 @@ export const DesignReviewerNode = memo(({ id, data }: NodeProps<PSDNodeData>) =>
             if (!apiKey) throw new Error("API_KEY missing");
             const ai = new GoogleGenAI({ apiKey });
 
-            const targetBounds = payload.targetBounds || payload.metrics.target;
+            // Fix: Normalize targetBounds to ensure x and y exist. Fallback to 0,0 if metrics.target is used.
+            const targetBounds = payload.targetBounds || {
+                x: 0,
+                y: 0,
+                w: payload.metrics.target.w,
+                h: payload.metrics.target.h
+            };
             
             // FLATTEN HIERARCHY & CALCULATE RELATIVE OFFSETS
             // This ensures the AI sees every layer (including nested ones) and knows their exact
@@ -615,6 +643,7 @@ export const DesignReviewerNode = memo(({ id, data }: NodeProps<PSDNodeData>) =>
                                 onChat={handleChat}
                                 onVerify={handleVerify}
                                 onCommit={handleCommit}
+                                onReset={handleReset}
                                 isPolished={isPolished}
                                 isAnalyzing={!!analyzingInstances[i]}
                                 isSyncing={!!syncingInstances[i]}
