@@ -38,7 +38,7 @@ const INITIAL_NODES: Node<PSDNodeData>[] = [
     data: { fileName: null, template: null, validation: null, designLayers: null },
   },
   
-  // 2. Inspector Column (X: 450 - Aligned with Col 2)
+  // 2. Inspector Column (X: 450 -  Aligned with Col 2)
   {
     id: 'node-inspector-1',
     type: 'knowledgeInspector',
