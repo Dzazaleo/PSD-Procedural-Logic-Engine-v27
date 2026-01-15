@@ -1,3 +1,4 @@
+
 import * as React from 'react';
 import { memo, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Handle, Position, NodeResizer, useEdges, useReactFlow, useUpdateNodeInternals, useNodes } from 'reactflow';
@@ -7,7 +8,7 @@ import { useProceduralStore } from '../store/ProceduralContext';
 import { getSemanticThemeObject, findLayerByPath } from '../services/psdService';
 import { useKnowledgeScoper } from '../hooks/useKnowledgeScoper';
 import { GoogleGenAI, Type } from "@google/genai";
-import { Brain, BrainCircuit, Ban, ClipboardList, AlertCircle, RefreshCw, RotateCcw, Play, Eye, BookOpen, Tag, Activity } from 'lucide-react';
+import { Brain, BrainCircuit, Ban, ClipboardList, AlertCircle, RefreshCw, RotateCcw, Play, Eye, BookOpen, Tag, Activity, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { Psd } from 'ag-psd';
 
 type ModelKey = 'gemini-3-flash' | 'gemini-3-pro' | 'gemini-3-pro-thinking';
@@ -16,7 +17,8 @@ const DEFAULT_INSTANCE_STATE: AnalystInstanceState = {
     chatHistory: [],
     layoutStrategy: null,
     selectedModel: 'gemini-3-pro',
-    isKnowledgeMuted: false
+    isKnowledgeMuted: false,
+    isMinimized: false
 };
 
 interface ModelConfig {
@@ -47,6 +49,37 @@ const MODELS: Record<ModelKey, ModelConfig> = {
     headerClass: 'border-purple-500/50 bg-purple-900/20',
     thinkingBudget: 16384
   }
+};
+
+// Fix: Define missing generateSystemInstruction helper function to resolve reference error
+const generateSystemInstruction = (sourceData: MappingContext, targetData: any, rules: string | null): string => {
+  const sourceBounds = sourceData.container.bounds;
+  const targetBounds = targetData.bounds;
+
+  return `
+    ROLE: Senior PSD Procedural Layout Engineer & Design Analyst.
+    TASK: Analyze the provided source layers and map them into the target container definition using semantic design intelligence.
+
+    CONTEXT:
+    - SOURCE CONTAINER: ${sourceData.container.containerName} (${Math.round(sourceBounds.w)}x${Math.round(sourceBounds.h)})
+    - TARGET CONTAINER: ${targetData.name} (${Math.round(targetBounds.w)}x${Math.round(targetBounds.h)})
+    - SOURCE LAYERS (JSON SUMMARY): ${JSON.stringify(sourceData.layers).substring(0, 5000)}
+
+    ${rules ? `DESIGN RULES & GUIDELINES:\n${rules}` : 'No specific design rules provided. Use standard aesthetic principles.'}
+
+    GOAL:
+    1. Calculate a global 'suggestedScale' to fit the content naturally into the target container.
+    2. Determine if the mapping requires 'GEOMETRIC' (direct move/scale), 'GENERATIVE' (AI recreation), or 'HYBRID' (mixed) methods.
+    3. Provide precise 'overrides' for layers that need manual adjustment from the default geometric projection.
+    4. Perform a 'triangulation' audit:
+       - Visual: What does the image context suggest?
+       - Knowledge: How do the rules apply here?
+       - Metadata: What do the layer names imply?
+    5. Assign 'layoutRole' (flow, static, overlay, background) to layers to guide the physics engine.
+    6. 'xOffset' and 'yOffset' in overrides MUST be relative to the TARGET container's top-left origin (0,0).
+
+    OUTPUT FORMAT: You must return a valid JSON object matching the provided schema.
+  `;
 };
 
 const StrategyCard: React.FC<{ strategy: LayoutStrategy, modelConfig: ModelConfig }> = ({ strategy, modelConfig }) => {
@@ -189,19 +222,20 @@ const StrategyCard: React.FC<{ strategy: LayoutStrategy, modelConfig: ModelConfi
 };
 
 const InstanceRow: React.FC<any> = ({ 
-    nodeId, index, state, sourceData, targetData, onAnalyze, onModelChange, onToggleMute, onReset, isAnalyzing, compactMode, activeKnowledge 
+    nodeId, index, state, sourceData, targetData, onAnalyze, onModelChange, onToggleMute, onReset, onToggleMinimize, onDelete, isAnalyzing, compactMode, activeKnowledge 
 }) => {
     const chatContainerRef = useRef<HTMLDivElement>(null);
     const activeModelConfig = MODELS[state.selectedModel as ModelKey];
     const isReady = !!sourceData && !!targetData;
     const targetName = targetData?.name || (sourceData?.container.containerName) || 'Unknown';
     const theme = getSemanticThemeObject(targetName, index);
+    const isMinimized = state.isMinimized || false;
 
     useEffect(() => {
         if (chatContainerRef.current) {
             chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
         }
-    }, [state.chatHistory.length, isAnalyzing]);
+    }, [state.chatHistory.length, isAnalyzing, isMinimized]);
 
     useEffect(() => {
         const container = chatContainerRef.current;
@@ -222,15 +256,31 @@ const InstanceRow: React.FC<any> = ({
     };
 
     return (
-        <div className={`relative border-b border-slate-700/50 bg-slate-800/30 first:border-t-0 ${compactMode ? 'py-2' : ''}`}>
-             {/* ... (Header and Controls remain the same) ... */}
-            <div className={`px-3 py-2 flex items-center justify-between ${theme.bg.replace('/20', '/10')}`}>
-                <div className="flex items-center space-x-2">
+        <div className={`relative border-b border-slate-700/50 bg-slate-800/30 first:border-t-0 ${compactMode ? 'py-1' : ''}`}>
+             {/* Header with Persistent Controls and Dynamic Handles */}
+            <div className={`px-3 py-2 flex items-center justify-between transition-colors ${theme.bg.replace('/20', '/10')} relative`}>
+                {/* Dynamic Handles: Docked to Header to survive minimization */}
+                <div className="absolute left-0 inset-y-0 flex flex-col justify-center gap-2 -ml-1.5 z-50">
+                    <Handle type="target" position={Position.Left} id={`source-in-${index}`} className="!relative !w-3 !h-3 !rounded-full !bg-indigo-500 !border-2 !border-slate-800 transition-transform hover:scale-125" title="Input: Source Context" />
+                    <Handle type="target" position={Position.Left} id={`target-in-${index}`} className="!relative !w-3 !h-3 !rounded-full !bg-emerald-500 !border-2 !border-slate-800 transition-transform hover:scale-125" title="Input: Target Definition" />
+                </div>
+                <div className="absolute right-0 inset-y-0 flex flex-col justify-center gap-2 -mr-1.5 z-50">
+                    <Handle type="source" position={Position.Right} id={`source-out-${index}`} className="!relative !w-3 !h-3 !rounded-full !bg-indigo-500 !border-2 !border-white transition-transform hover:scale-125" title="Relay: Source Data + AI Strategy" />
+                    <Handle type="source" position={Position.Right} id={`target-out-${index}`} className="!relative !w-3 !h-3 !rounded-full !bg-emerald-500 !border-2 !border-white transition-transform hover:scale-125" title="Relay: Target Definition" />
+                </div>
+
+                <div className="flex items-center space-x-2 pl-4">
+                    <button 
+                        onClick={() => onToggleMinimize(index)}
+                        className="p-1 hover:bg-black/20 rounded transition-colors text-slate-400"
+                    >
+                        {isMinimized ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+                    </button>
                     <div className={`w-2 h-2 rounded-full ${theme.dot}`}></div>
                     <span className={`text-[11px] font-bold tracking-wide uppercase ${theme.text}`}>
                         {targetData?.name || `Instance ${index + 1}`}
                     </span>
-                    {activeKnowledge && state.isKnowledgeMuted && (
+                    {activeKnowledge && state.isKnowledgeMuted && !isMinimized && (
                          <span className="flex items-center space-x-1 text-[9px] text-slate-500 font-bold bg-slate-800/50 px-1.5 py-0.5 rounded border border-slate-700/50 ml-2">
                              <Ban className="w-2.5 h-2.5" />
                              <span className="line-through decoration-slate-500">RULES</span>
@@ -238,8 +288,8 @@ const InstanceRow: React.FC<any> = ({
                     )}
                 </div>
                 
-                <div className="flex items-center space-x-2">
-                    {activeKnowledge && (
+                <div className="flex items-center space-x-1.5">
+                    {!isMinimized && activeKnowledge && (
                         <button
                             onClick={(e) => { e.stopPropagation(); onToggleMute(index); }}
                             className={`nodrag nopan p-1 rounded transition-colors border ${
@@ -253,146 +303,147 @@ const InstanceRow: React.FC<any> = ({
                         </button>
                     )}
 
-                    <button
-                        onClick={(e) => { e.stopPropagation(); onReset(index); }}
-                        className="nodrag nopan p-1 rounded transition-colors bg-slate-800 text-slate-500 border border-slate-700 hover:text-red-400 hover:border-red-900/50"
-                        title="Reset Instance (Clear History & Strategy)"
-                    >
-                        <RotateCcw className="w-3 h-3" />
-                    </button>
+                    {!isMinimized && (
+                        <>
+                            <button
+                                onClick={(e) => { e.stopPropagation(); onReset(index); }}
+                                className="nodrag nopan p-1 rounded transition-colors bg-slate-800 text-slate-500 border border-slate-700 hover:text-red-400 hover:border-red-900/50"
+                                title="Reset Instance"
+                            >
+                                <RotateCcw className="w-3 h-3" />
+                            </button>
 
-                    <div className="relative">
-                        <select 
-                            value={state.selectedModel}
-                            onChange={(e) => onModelChange(index, e.target.value as ModelKey)}
-                            onClick={(e) => e.stopPropagation()}
-                            onMouseDown={(e) => e.stopPropagation()}
-                            className={`nodrag nopan appearance-none text-[9px] px-2 py-1 pr-4 rounded font-mono font-bold cursor-pointer outline-none border transition-colors duration-300 ${activeModelConfig.badgeClass}`}
-                        >
-                            <option value="gemini-3-flash" className="text-black bg-white">FLASH</option>
-                            <option value="gemini-3-pro" className="text-black bg-white">PRO</option>
-                            <option value="gemini-3-pro-thinking" className="text-black bg-white">DEEP</option>
-                        </select>
-                    </div>
+                            <div className="relative">
+                                <select 
+                                    value={state.selectedModel}
+                                    onChange={(e) => onModelChange(index, e.target.value as ModelKey)}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    className={`nodrag nopan appearance-none text-[9px] px-2 py-1 pr-4 rounded font-mono font-bold cursor-pointer outline-none border transition-colors duration-300 ${activeModelConfig.badgeClass}`}
+                                >
+                                    <option value="gemini-3-flash" className="text-black bg-white">FLASH</option>
+                                    <option value="gemini-3-pro" className="text-black bg-white">PRO</option>
+                                    <option value="gemini-3-pro-thinking" className="text-black bg-white">DEEP</option>
+                                </select>
+                            </div>
+                        </>
+                    )}
+
+                    <button
+                        onClick={(e) => { e.stopPropagation(); onDelete(index); }}
+                        className="p-1 hover:bg-red-900/30 hover:text-red-400 rounded transition-colors text-slate-500"
+                        title="Delete Instance"
+                    >
+                        <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                 </div>
             </div>
 
-            <div className={`p-3 space-y-3 ${compactMode ? 'text-[10px]' : ''}`}>
-                 <div className="flex items-center justify-between bg-slate-900/40 rounded p-2 border border-slate-700/30 relative min-h-[60px] overflow-visible">
-                    
-                    <div className="flex flex-col gap-4 relative justify-center h-full">
-                         <div className="relative flex items-center group h-4">
-                            <Handle type="target" position={Position.Left} id={`source-in-${index}`} className="!absolute !-left-7 !w-3 !h-3 !rounded-full !bg-indigo-500 !border-2 !border-slate-800 z-50 transition-transform hover:scale-125" style={{ top: '50%', transform: 'translate(-50%, -50%)' }} title="Input: Source Context" />
+            {/* Collapsible Body */}
+            {!isMinimized && (
+                <div className={`p-3 space-y-3 ${compactMode ? 'text-[10px]' : ''}`}>
+                    <div className="flex items-center justify-between bg-slate-900/40 rounded p-2 border border-slate-700/30 relative min-h-[60px] overflow-visible">
+                        <div className="flex flex-col gap-4 relative justify-center h-full">
                             <span className={`text-[9px] font-mono font-bold leading-none ${sourceData ? 'text-indigo-300' : 'text-slate-600'} ml-1`}>SRC</span>
-                         </div>
-                         <div className="relative flex items-center group h-4">
-                            <Handle type="target" position={Position.Left} id={`target-in-${index}`} className="!absolute !-left-7 !w-3 !h-3 !rounded-full !bg-emerald-500 !border-2 !border-slate-800 z-50 transition-transform hover:scale-125" style={{ top: '50%', transform: 'translate(-50%, -50%)' }} title="Input: Target Definition" />
                             <span className={`text-[9px] font-mono font-bold leading-none ${targetData ? 'text-emerald-300' : 'text-slate-600'} ml-1`}>TGT</span>
-                         </div>
-                    </div>
-
-                    <div className="flex items-center justify-center space-x-3 mx-4 border-x border-slate-700/20 px-4 flex-1">
-                        <div className="flex flex-col items-center gap-1">
-                            <div className="border-2 border-dashed flex items-center justify-center bg-indigo-500/10 transition-all duration-300" style={sourceData ? getPreviewStyle(sourceData.container.bounds.w, sourceData.container.bounds.h, '#6366f1') : { width: 24, height: 24, borderColor: '#334155' }}></div>
-                            {sourceData && (<span className="text-[8px] font-mono text-slate-500 leading-none">{Math.round(sourceData.container.bounds.w)}x{Math.round(sourceData.container.bounds.h)}</span>)}
                         </div>
-                        <div className=""><svg className="w-3 h-3 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg></div>
-                        <div className="flex flex-col items-center gap-1">
-                            <div className="border-2 border-dashed flex items-center justify-center bg-emerald-500/10 transition-all duration-300" style={targetData ? getPreviewStyle(targetData.bounds.w, targetData.bounds.h, '#10b981') : { width: 24, height: 24, borderColor: '#334155' }}></div>
-                             {targetData && (<span className="text-[8px] font-mono text-slate-500 leading-none">{Math.round(targetData.bounds.w)}x{Math.round(targetData.bounds.h)}</span>)}
-                        </div>
-                    </div>
 
-                    <div className="flex flex-col gap-4 items-end relative justify-center h-full">
-                        <div className="relative flex items-center justify-end group h-4">
-                            <span className="text-[9px] font-mono font-bold leading-none text-slate-500 mr-1">SOURCE</span>
-                            <Handle type="source" position={Position.Right} id={`source-out-${index}`} className="!absolute !-right-7 !w-3 !h-3 !rounded-full !bg-indigo-500 !border-2 !border-white z-50 transition-transform hover:scale-125" style={{ top: '50%', transform: 'translate(50%, -50%)' }} title="Relay: Source Data + AI Strategy" />
-                        </div>
-                        <div className="relative flex items-center justify-end group h-4">
-                            <span className="text-[9px] font-mono font-bold leading-none text-slate-500 mr-1">TARGET</span>
-                            <Handle type="source" position={Position.Right} id={`target-out-${index}`} className="!absolute !-right-7 !w-3 !h-3 !rounded-full !bg-emerald-500 !border-2 !border-white z-50 transition-transform hover:scale-125" style={{ top: '50%', transform: 'translate(50%, -50%)' }} title="Relay: Target Definition" />
-                        </div>
-                    </div>
-                </div>
-
-                <div 
-                    ref={chatContainerRef} 
-                    className={`nodrag nopan ${compactMode ? 'h-48' : 'h-64'} overflow-y-auto border border-slate-700 bg-slate-900 rounded p-3 space-y-3 custom-scrollbar transition-all shadow-inner cursor-auto`} 
-                    onMouseDown={(e) => e.stopPropagation()}
-                >
-                    {state.chatHistory.length === 0 && (
-                        <div className="h-full flex flex-col items-center justify-center text-slate-600 italic text-xs opacity-50"><span>Ready to analyze {targetData?.name || 'slot'}</span></div>
-                    )}
-                    {state.chatHistory.map((msg: any, idx: number) => (
-                        <div key={msg.id || idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                            <div className={`max-w-[95%] rounded border p-3 text-xs leading-relaxed shadow-sm ${msg.role === 'user' ? 'bg-slate-800 border-slate-600 text-slate-200' : `bg-slate-800/50 ${activeModelConfig.badgeClass.replace('bg-', 'border-').split(' ')[0]} text-slate-300`}`}>
-                                {msg.parts?.[0]?.text && msg.role === 'user' && (<div className="whitespace-pre-wrap break-words">{msg.parts[0].text}</div>)}
-                                
-                                {msg.role === 'model' && msg.strategySnapshot && (
-                                    <div className="flex flex-col gap-3">
-                                        <div className="space-y-1.5">
-                                            <div className="flex items-center space-x-2 border-b border-slate-700/50 pb-1.5">
-                                                <div className="p-1 bg-purple-500/20 rounded">
-                                                    <Brain className="w-3 h-3 text-purple-300" />
-                                                </div>
-                                                <span className="text-[10px] font-bold text-purple-200 uppercase tracking-widest">
-                                                    Expert Design Audit
-                                                </span>
-                                            </div>
-                                            <div className="text-slate-300 text-xs leading-relaxed whitespace-pre-wrap pl-1">
-                                                {msg.strategySnapshot.reasoning}
-                                            </div>
-                                        </div>
-
-                                        <StrategyCard strategy={msg.strategySnapshot} modelConfig={activeModelConfig} />
-                                    </div>
-                                )}
+                        <div className="flex items-center justify-center space-x-3 mx-4 border-x border-slate-700/20 px-4 flex-1">
+                            <div className="flex flex-col items-center gap-1">
+                                <div className="border-2 border-dashed flex items-center justify-center bg-indigo-500/10 transition-all duration-300" style={sourceData ? getPreviewStyle(sourceData.container.bounds.w, sourceData.container.bounds.h, '#6366f1') : { width: 24, height: 24, borderColor: '#334155' }}></div>
+                                {sourceData && (<span className="text-[8px] font-mono text-slate-500 leading-none">{Math.round(sourceData.container.bounds.w)}x{Math.round(sourceData.container.bounds.h)}</span>)}
+                            </div>
+                            <div className=""><svg className="w-3 h-3 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg></div>
+                            <div className="flex flex-col items-center gap-1">
+                                <div className="border-2 border-dashed flex items-center justify-center bg-emerald-500/10 transition-all duration-300" style={targetData ? getPreviewStyle(targetData.bounds.w, targetData.bounds.h, '#10b981') : { width: 24, height: 24, borderColor: '#334155' }}></div>
+                                {targetData && (<span className="text-[8px] font-mono text-slate-500 leading-none">{Math.round(targetData.bounds.w)}x{Math.round(targetData.bounds.h)}</span>)}
                             </div>
                         </div>
-                    ))}
-                    {isAnalyzing && (
-                        <div className="flex items-center space-x-2 text-xs text-slate-400 animate-pulse pl-1">
-                            <div className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce"></div>
-                            <span>Analyst is thinking...</span>
-                            {activeKnowledge && !state.isKnowledgeMuted && (
-                                <span className="text-[9px] text-teal-400 font-bold ml-1 flex items-center gap-1">
-                                    <Brain className="w-3 h-3" />
-                                    + Rules & Anchors
-                                </span>
-                            )}
-                        </div>
-                    )}
-                </div>
 
-                <div className="flex items-center space-x-2 pt-2 border-t border-slate-700/30">
-                     <button 
-                        onClick={(e) => { e.stopPropagation(); onAnalyze(index); }} 
-                        onMouseDown={(e) => e.stopPropagation()} 
-                        disabled={!isReady || isAnalyzing} 
-                        className={`nodrag nopan h-9 w-full rounded text-[10px] font-bold uppercase tracking-wider transition-all shadow-lg flex items-center justify-center space-x-2 
-                            ${isReady && !isAnalyzing 
-                                ? 'bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white border border-indigo-400/50' 
-                                : 'bg-slate-800 text-slate-600 cursor-not-allowed border border-slate-700'
-                            }`}
-                     >
-                        <Play className="w-3 h-3 fill-current" />
-                        <span>Run Design Analysis</span>
-                     </button>
+                        <div className="flex flex-col gap-4 items-end relative justify-center h-full">
+                            <span className="text-[9px] font-mono font-bold leading-none text-slate-500 mr-1">SOURCE</span>
+                            <span className="text-[9px] font-mono font-bold leading-none text-slate-500 mr-1">TARGET</span>
+                        </div>
+                    </div>
+
+                    <div 
+                        ref={chatContainerRef} 
+                        className={`nodrag nopan ${compactMode ? 'h-48' : 'h-64'} overflow-y-auto border border-slate-700 bg-slate-900 rounded p-3 space-y-3 custom-scrollbar transition-all shadow-inner cursor-auto`} 
+                        onMouseDown={(e) => e.stopPropagation()}
+                    >
+                        {state.chatHistory.length === 0 && (
+                            <div className="h-full flex flex-col items-center justify-center text-slate-600 italic text-xs opacity-50"><span>Ready to analyze {targetData?.name || 'slot'}</span></div>
+                        )}
+                        {state.chatHistory.map((msg: any, idx: number) => (
+                            <div key={msg.id || idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                                <div className={`max-w-[95%] rounded border p-3 text-xs leading-relaxed shadow-sm ${msg.role === 'user' ? 'bg-slate-800 border-slate-600 text-slate-200' : `bg-slate-800/50 ${activeModelConfig.badgeClass.replace('bg-', 'border-').split(' ')[0]} text-slate-300`}`}>
+                                    {msg.parts?.[0]?.text && msg.role === 'user' && (<div className="whitespace-pre-wrap break-words">{msg.parts[0].text}</div>)}
+                                    
+                                    {msg.role === 'model' && msg.strategySnapshot && (
+                                        <div className="flex flex-col gap-3">
+                                            <div className="space-y-1.5">
+                                                <div className="flex items-center space-x-2 border-b border-slate-700/50 pb-1.5">
+                                                    <div className="p-1 bg-purple-500/20 rounded">
+                                                        <Brain className="w-3 h-3 text-purple-300" />
+                                                    </div>
+                                                    <span className="text-[10px] font-bold text-purple-200 uppercase tracking-widest">
+                                                        Expert Design Audit
+                                                    </span>
+                                                </div>
+                                                <div className="text-slate-300 text-xs leading-relaxed whitespace-pre-wrap pl-1">
+                                                    {msg.strategySnapshot.reasoning}
+                                                </div>
+                                            </div>
+
+                                            <StrategyCard strategy={msg.strategySnapshot} modelConfig={activeModelConfig} />
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                        {isAnalyzing && (
+                            <div className="flex items-center space-x-2 text-xs text-slate-400 animate-pulse pl-1">
+                                <div className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce"></div>
+                                <span>Analyst is thinking...</span>
+                                {activeKnowledge && !state.isKnowledgeMuted && (
+                                    <span className="text-[9px] text-teal-400 font-bold ml-1 flex items-center gap-1">
+                                        <Brain className="w-3 h-3" />
+                                        + Rules & Anchors
+                                    </span>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="flex items-center space-x-2 pt-2 border-t border-slate-700/30">
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); onAnalyze(index); }} 
+                            onMouseDown={(e) => e.stopPropagation()} 
+                            disabled={!isReady || isAnalyzing} 
+                            className={`nodrag nopan h-9 w-full rounded text-[10px] font-bold uppercase tracking-wider transition-all shadow-lg flex items-center justify-center space-x-2 
+                                ${isReady && !isAnalyzing 
+                                    ? 'bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white border border-indigo-400/50' 
+                                    : 'bg-slate-800 text-slate-600 cursor-not-allowed border border-slate-700'
+                                }`}
+                        >
+                            <Play className="w-3 h-3 fill-current" />
+                            <span>Run Design Analysis</span>
+                        </button>
+                    </div>
                 </div>
-            </div>
+            )}
         </div>
     );
 };
 
 export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
-  // ... (Hooks and callbacks remain unchanged) ...
   const [analyzingInstances, setAnalyzingInstances] = useState<Record<number, boolean>>({});
   const instanceCount = data.instanceCount || 1;
   const analystInstances = data.analystInstances || {};
   const draftTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const edges = useEdges();
   const nodes = useNodes(); 
-  const { setNodes } = useReactFlow();
+  const { setNodes, setEdges } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
   const { resolvedRegistry, templateRegistry, knowledgeRegistry, registerResolved, registerTemplate, unregisterNode, psdRegistry, flushPipelineInstance } = useProceduralStore();
 
@@ -402,7 +453,7 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
 
   useEffect(() => {
     updateNodeInternals(id);
-  }, [id, instanceCount, updateNodeInternals]);
+  }, [id, instanceCount, analystInstances, updateNodeInternals]);
 
   const activeContainerNames = useMemo(() => {
     const names: string[] = [];
@@ -586,9 +637,87 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
   }, [id, setNodes]);
   
   const handleReset = useCallback((index: number) => {
-      updateInstanceState(index, DEFAULT_INSTANCE_STATE);
+      updateInstanceState(index, { ...DEFAULT_INSTANCE_STATE, isMinimized: analystInstances[index]?.isMinimized });
       flushPipelineInstance(id, `source-out-${index}`);
-  }, [updateInstanceState, flushPipelineInstance, id]);
+  }, [updateInstanceState, flushPipelineInstance, id, analystInstances]);
+
+  const handleToggleMinimize = useCallback((index: number) => {
+    const isMinimized = analystInstances[index]?.isMinimized || false;
+    updateInstanceState(index, { isMinimized: !isMinimized });
+    // CRITICAL: Re-calculate handle positions after collapse/expand
+    setTimeout(() => updateNodeInternals(id), 0);
+  }, [id, analystInstances, updateInstanceState, updateNodeInternals]);
+
+  const handleDeleteInstance = useCallback((index: number) => {
+    // 1. Remove and shift edges
+    setEdges(eds => {
+        let newEdges = eds.filter(e => {
+            const isTargetMe = e.target === id;
+            const isSourceMe = e.source === id;
+            if (isTargetMe) return !e.targetHandle?.endsWith(`-${index}`);
+            if (isSourceMe) return !e.sourceHandle?.endsWith(`-${index}`);
+            return true;
+        });
+
+        // SHIFT LOGIC: To keep procedural flow, we shift all higher indices down
+        newEdges = newEdges.map(e => {
+            const isTargetMe = e.target === id;
+            const isSourceMe = e.source === id;
+            
+            let newTargetHandle = e.targetHandle;
+            let newSourceHandle = e.sourceHandle;
+
+            if (isTargetMe && e.targetHandle) {
+                const match = e.targetHandle.match(/-(\d+)$/);
+                if (match) {
+                    const idx = parseInt(match[1], 10);
+                    if (idx > index) newTargetHandle = e.targetHandle.replace(`-${idx}`, `-${idx - 1}`);
+                }
+            }
+            if (isSourceMe && e.sourceHandle) {
+                 const match = e.sourceHandle.match(/-(\d+)$/);
+                 if (match) {
+                    const idx = parseInt(match[1], 10);
+                    if (idx > index) newSourceHandle = e.sourceHandle.replace(`-${idx}`, `-${idx - 1}`);
+                 }
+            }
+            return { ...e, targetHandle: newTargetHandle, sourceHandle: newSourceHandle };
+        });
+
+        return newEdges;
+    });
+
+    // 2. Update Node state (Shift instance data)
+    setNodes(nds => nds.map(n => {
+        if (n.id === id) {
+            const currentCount = n.data.instanceCount || 1;
+            const currentInstances = { ...(n.data.analystInstances || {}) };
+            const newInstances: Record<number, AnalystInstanceState> = {};
+            
+            Object.keys(currentInstances).forEach(k => {
+                const idx = parseInt(k, 10);
+                if (idx < index) newInstances[idx] = currentInstances[idx];
+                else if (idx > index) newInstances[idx - 1] = currentInstances[idx];
+            });
+
+            return {
+                ...n,
+                data: {
+                    ...n.data,
+                    instanceCount: Math.max(0, currentCount - 1),
+                    analystInstances: newInstances
+                }
+            };
+        }
+        return n;
+    }));
+
+    // 3. Store Flush
+    flushPipelineInstance(id, `source-out-${index}`);
+    
+    // 4. Update internal positions
+    setTimeout(() => updateNodeInternals(id), 50);
+  }, [id, setEdges, setNodes, flushPipelineInstance, updateNodeInternals]);
 
   const handleModelChange = (index: number, model: ModelKey) => {
       updateInstanceState(index, { selectedModel: model });
@@ -597,160 +726,6 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
   const handleToggleMute = (index: number) => {
       const currentState = analystInstances[index]?.isKnowledgeMuted || false;
       updateInstanceState(index, { isKnowledgeMuted: !currentState });
-  };
-
-  const generateDraft = async (prompt: string, sourceReference?: string): Promise<string | null> => {
-     try {
-         const apiKey = process.env.API_KEY;
-         if (!apiKey) return null;
-         const ai = new GoogleGenAI({ apiKey });
-         const parts: any[] = [];
-         if (sourceReference) {
-             const base64Data = sourceReference.includes('base64,') ? sourceReference.split('base64,')[1] : sourceReference;
-             parts.push({ inlineData: { mimeType: 'image/png', data: base64Data } });
-         }
-         parts.push({ text: `Generate a draft sketch (256x256) for: ${prompt}` });
-         const response = await ai.models.generateContent({
-             model: 'gemini-2.5-flash-image',
-             contents: { parts },
-             config: { imageConfig: { aspectRatio: "1:1" } }
-         });
-         for (const part of response.candidates?.[0]?.content?.parts || []) {
-            if (part.inlineData) { return `data:image/png;base64,${part.inlineData.data}`; }
-         }
-         return null;
-     } catch (e) {
-         console.error("Draft Generation Failed", e);
-         return null;
-     }
-  };
-
-  const generateSystemInstruction = (sourceData: any, targetData: any, effectiveRules: string | null) => {
-    const sourceW = sourceData.container.bounds.w;
-    const sourceH = sourceData.container.bounds.h;
-    const targetW = targetData.bounds.w;
-    const targetH = targetData.bounds.h;
-
-    const flattenLayers = (layers: SerializableLayer[], depth = 0): any[] => {
-        let flat: any[] = [];
-        layers.forEach(l => {
-            flat.push({
-                id: l.id, name: l.name, type: l.type, depth: depth,
-                relX: (l.coords.x - sourceData.container.bounds.x) / sourceW,
-                relY: (l.coords.y - sourceData.container.bounds.y) / sourceH,
-                width: l.coords.w, height: l.coords.h
-            });
-            if (l.children) { flat = flat.concat(flattenLayers(l.children, depth + 1)); }
-        });
-        return flat;
-    };
-
-    const layerAnalysisData = flattenLayers(sourceData.layers as SerializableLayer[]);
-
-    let prompt = `
-        ROLE: Senior Visual Systems Lead & Expert Graphic Designer.
-        GOAL: Perform "Knowledge-Anchored Semantic Recomposition" with Intuition Fallback.
-        
-        CONTAINER CONTEXT:
-        - Source: ${sourceData.container.containerName} (${sourceW}x${sourceH})
-        - Target: ${targetData.name} (${targetW}x${targetH})
-        
-        LAYER HIERARCHY (JSON):
-        ${JSON.stringify(layerAnalysisData.slice(0, 100))}
-
-        SEMANTIC ROLE PROTOCOL (THE DETECTIVE):
-        You must classify every layer into one of the following roles based on Visual and Structural Heuristics. 
-        DO NOT wait for explicit instructions; rely on the patterns below:
-        1. FLOW: Repeating elements, groups with similar names (e.g. 'item_1', 'item_2'), or main content bodies. These belong in the Grid.
-        2. STATIC: Unique UI elements anchored to the Top/Bottom 10% of the canvas (e.g. Headers, Footers, Title Text). These ignore the Grid.
-        3. OVERLAY: Elements that are geographically inside or share a center-point with a larger 'anchor' sibling. (e.g. A 'Price' tag on a 'Card'). These MUST attach to their anchor.
-        4. BACKGROUND: Full-bleed textures at the bottom of the stack.
-
-        AUTO-LINKING PROTOCOL (THE COUPLER):
-        CRITICAL: If you classify a layer as 'overlay', you MUST populate the 'linkedAnchorId' field. An overlay without an anchor is INVALID.
-        - Heuristic: Find the 'anchor' layer (usually a FLOW item) that shares the closest center-point or fully contains the overlay's bounding box.
-        - The 'linkedAnchorId' MUST be the exact 'id' string of that specific parent/sibling layer from the JSON hierarchy.
-        - Do not link to a generic group if a specific sprite is the visual anchor.
-
-        KNOWLEDGE OVERRIDE PROTOCOL (THE LAWYER):
-        If the [START KNOWLEDGE] block below contains specific rules for a layer, YOU MUST OBEY THE RULE over your detective inference.
-        - If Rule says "Locked to TOP_CENTER" -> Force role: 'static'.
-        - If Rule says "Centered ON [Layer X]" -> Force role: 'overlay' and set 'linkedAnchorId': '[Layer X]'.
-        - If Rule says "Grid Distribution" -> Force involved layers to role: 'flow'.
-
-        LAYOUT & PHYSICS PROTOCOL:
-        - Extract 'LAYOUT_METHOD' from Knowledge (e.g. "GRID_DISTRIBUTION" -> layoutMode: 'DISTRIBUTE_HORIZONTAL' or 'GRID').
-        - Extract 'BOUNDARY_PHYSICS' (e.g. "No Clipping" -> physicsRules.preventClipping: true).
-        - CRITICAL: Do NOT use 'suggestedScale' to calculate positions. 'suggestedScale' applies ONLY to the Width/Height of the element. X/Y coordinates must be derived relative to the Target Bounds.
-
-        TRIANGULATION PROTOCOL:
-        You are an expert Semantic Auditor. You must triangulate your decision using three vectors before finalizing your strategy:
-        1. Visual: What do you see in the source image? (e.g., "Red Potion Flask")
-        2. Knowledge: Do the active rules mention this object type? (e.g., "Health items must be red and centered")
-        3. Metadata: Does the layer name support this? (e.g., "Layer 'health_01'")
-
-        Determine a 'confidence_verdict' (HIGH/MEDIUM/LOW) based on how many vectors align:
-        - 3 Vectors = HIGH (Full Semantic Lock)
-        - 2 Vectors = MEDIUM (Likely Match)
-        - 0-1 Vectors = LOW (Geometric Fallback Recommended)
-
-        GENERATIVE PROHIBITION PROTOCOL:
-        Your default and primary method is 'GEOMETRIC'.
-        You are STRICTLY FORBIDDEN from using 'GENERATIVE' or 'HYBRID' methods unless the provided [START KNOWLEDGE] rules explicitly authorize image regeneration or AI synthesis for the specific container: '${targetData.name}'.
-        Authorization is only valid if the rules contain phrases such as 'allow generative fill', 'authorize AI reconstruction', or 'recreate background texture'.
-        If the Knowledge rules are missing, muted, or do not explicitly grant generative permission, you MUST select 'GEOMETRIC' and set 'generativePrompt' to an empty string.
-        You cannot use 'Expert Intuition' to justify the creation of new pixels; only explicit Knowledge directives can unlock generative methods.
-        In your 'reasoning' output, if you select a generative method, you must start the paragraph by citing the specific authorization rule found in the Knowledge Context.
-
-        DIRECTIVE EXTRACTION PROTOCOL:
-        Analyze the Knowledge Rules below for mandatory constraints (keywords: MUST, SHALL, REQUIRED).
-        Map them to specific directive constants in the 'directives' array output:
-        - If rule implies AI generation (e.g. "Background... must be AI-generated"): add "MANDATORY_GEN_FILL" and force method='GENERATIVE'.
-        - If rule implies vertical centering (e.g. "must be centered vertically"): add "ENFORCE_CENTER_ALIGN".
-        - If rule implies grid division (e.g. "5 equal parts"): add "FORCE_5_COLUMN_DIVISION".
-        - If rule implies removing elements: add "REMOVE_NON_COMPLIANT".
-        - Add any other critical mandates as UPPERCASE_SNAKE_CASE strings.
-        
-        GROUNDING PROTOCOL:
-        1. Link every visual observation to a Metadata ID [layer-ID] using the deterministic path IDs provided in the JSON hierarchy.
-        2. Use the Image for visual auditing and JSON for coordinate mapping.
-        3. The top-left corner (0,0) of your visual workspace is the top-left of the Target Container (${targetData.name}).
-
-        OPERATIONAL CONSTRAINTS:
-        - NO NEW ELEMENTS: Strictly forbidden unless 'GENERATIVE' method is forced by Knowledge.
-        - NO DELETION: Strictly forbidden. Every layer in the JSON must remain visible and accounted for.
-        - SURGICAL SWAP EXCEPTION: If 'GENERATIVE' or 'HYBRID' method is selected, you MAY identify one specific 'replaceLayerId' from the input to be replaced by the AI output.
-          * TEXTURE ISOLATION: When specifying a 'replaceLayerId' for a background swap, ensure you target the deepest specific texture layer, avoiding groups that contain foreground UI elements.
-          * The AI output will inherit the Z-index and name of the 'replaceLayerId'.
-          * This is the ONLY context where deletion/replacement is permitted.
-        - GENERATIVE PROMPT PURITY: If generating a replacement texture, your 'generativePrompt' must be explicit: "Analyze and regenerate the texture for [insert layer-ID here] only. Maintain the aesthetic style of the provided image but exclude all other container elements."
-        - NO CROPPING: Strictly forbidden. Use scale and position only.
-        - METHOD 'GEOMETRIC': 'generativePrompt' MUST be "".
-
-        JSON OUTPUT RULES:
-        - Leading reasoning must justify 'overrides' by citing specific brand constraints (if found) or expert intuition.
-        - 'knowledgeApplied' must be set to true if Knowledge rules were explicitly used.
-        - RULE ATTRIBUTION: If 'knowledgeApplied' is true, every object in the 'overrides' array MUST include a 'citedRule' string (a concise summary of the specific brand rule applied).
-        - ANCHOR REFERENCING: If a visual anchor influenced the decision, include 'anchorIndex' (integer) referencing the 0-based index of the provided visual anchor.
-        - FALLBACK LOGIC: If a conflict exists between a textual rule and a visual anchor, prioritize the textual rule but note the conflict in the 'reasoning'.
-        - Your 'overrides' must accurately map to the 'layerId' strings provided in the hierarchy.
-    `;
-    
-    if (effectiveRules) {
-        prompt = `
-        [START KNOWLEDGE (SCOPED)]
-        ${effectiveRules}
-        [END KNOWLEDGE]
-        
-        CONTEXT SOURCE:
-        The rules above were extracted from "// [NAME] CONTAINER" blocks. They are strict hard constraints for this specific layout.
-        
-        CRITICAL: You are restricted to the following [CONTAINER PROTOCOL]. Ignore all previous generic design training that contradicts these specific rules.
-        
-        ` + prompt;
-    }
-    
-    return prompt;
   };
 
   const performAnalysis = async (index: number, history: ChatMessage[]) => {
@@ -775,10 +750,8 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
       setAnalyzingInstances(prev => ({ ...prev, [index]: true }));
 
       try {
-        const apiKey = process.env.API_KEY;
-        if (!apiKey) throw new Error("API_KEY missing");
-
-        const ai = new GoogleGenAI({ apiKey });
+        // Fix: Use direct initialization from process.env.API_KEY as per guidelines
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const systemInstruction = generateSystemInstruction(sourceData, targetData, effectiveRules);
         
         const sourcePixelsBase64 = await extractSourcePixels(sourceData.layers as SerializableLayer[], sourceData.container.bounds);
@@ -934,21 +907,6 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
         
         registerResolved(id, `source-out-${index}`, augmentedContext);
 
-        if ((json.method === 'GENERATIVE' || json.method === 'HYBRID') && json.generativePrompt) {
-             if (draftTimeoutRef.current) clearTimeout(draftTimeoutRef.current);
-             draftTimeoutRef.current = setTimeout(async () => {
-                 const url = await generateDraft(json.generativePrompt, json.sourceReference);
-                 if (url) {
-                     const contextWithPreview: MappingContext = {
-                         ...augmentedContext,
-                         previewUrl: url,
-                         message: "Free Preview: Draft"
-                     };
-                     registerResolved(id, `source-out-${index}`, contextWithPreview);
-                 }
-             }, 500);
-        }
-
       } catch (e: any) {
           console.error("Analysis Failed:", e);
       } finally {
@@ -1004,6 +962,7 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
                   <InstanceRow 
                       key={i} nodeId={id} index={i} state={state} sourceData={getSourceData(i)} targetData={getTargetData(i)}
                       onAnalyze={handleAnalyze} onModelChange={handleModelChange} onToggleMute={handleToggleMute} onReset={handleReset}
+                      onToggleMinimize={handleToggleMinimize} onDelete={handleDeleteInstance}
                       isAnalyzing={!!analyzingInstances[i]} compactMode={instanceCount > 1}
                       activeKnowledge={activeKnowledge}
                   />
