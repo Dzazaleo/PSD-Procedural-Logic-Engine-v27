@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useEffect } from 'react';
+import React, { useCallback, useMemo, useEffect, useRef } from 'react';
 import ReactFlow, {
   Background,
   Controls,
@@ -6,6 +6,7 @@ import ReactFlow, {
   useNodesState,
   useEdgesState,
   addEdge,
+  reconnectEdge,
   BackgroundVariant,
   ReactFlowProvider,
 } from 'reactflow';
@@ -210,6 +211,7 @@ const getInitialNodes = (): Node<PSDNodeData>[] => {
 const App: React.FC = () => {
   const [nodes, setNodes, onNodesChange] = useNodesState(getInitialNodes());
   const [edges, setEdges, onEdgesChange] = useEdgesState(INITIAL_EDGES);
+  const edgeReconnectSuccessful = useRef(true);
 
   // Persistence logic for layout state
   useEffect(() => {
@@ -373,6 +375,22 @@ const App: React.FC = () => {
     [nodes, setEdges]
   );
 
+  const onReconnectStart = useCallback(() => {
+    edgeReconnectSuccessful.current = false;
+  }, []);
+
+  const onReconnect = useCallback((oldEdge: Edge, newConnection: Connection) => {
+    edgeReconnectSuccessful.current = true;
+    setEdges((els) => reconnectEdge(oldEdge, newConnection, els));
+  }, [setEdges]);
+
+  const onReconnectEnd = useCallback((_: any, edge: Edge) => {
+    if (!edgeReconnectSuccessful.current) {
+      setEdges((eds) => eds.filter((e) => e.id !== edge.id));
+    }
+    edgeReconnectSuccessful.current = true;
+  }, [setEdges]);
+
   // Register custom node types
   const nodeTypes = useMemo(() => ({
     loadPsd: LoadPSDNode,
@@ -400,6 +418,9 @@ const App: React.FC = () => {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onReconnect={onReconnect}
+            onReconnectStart={onReconnectStart}
+            onReconnectEnd={onReconnectEnd}
             nodeTypes={nodeTypes}
             fitView
             className="bg-slate-900"
